@@ -183,11 +183,11 @@ func (ctx *BrokerContext) CheckProxyRelayPattern(pattern string, nonSupported bo
 	return proxyPattern.IsSupersetOf(brokerPattern)
 }
 
-// Client offer contains an SDP, bridge fingerprint and the NAT type of the client
+// Client offer contains an SDP, relay URL, and the NAT type of the client
 type ClientOffer struct {
-	natType     string
-	sdp         []byte
-	fingerprint []byte
+	natType  string
+	sdp      []byte
+	relayURL string
 }
 
 func main() {

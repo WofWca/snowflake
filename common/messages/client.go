@@ -65,11 +65,12 @@ type ClientPollRequest struct {
 	Offer       string `json:"offer"`
 	NAT         string `json:"nat"`
 	Fingerprint string `json:"fingerprint"`
+	RelayURL    string `json:"relayURL,omitempty"`
 }
 
 // Encodes a poll message from a snowflake client
 func (req *ClientPollRequest) EncodeClientPollRequest() ([]byte, error) {
-	if req.Fingerprint == "" {
+	if req.Fingerprint == "" && req.RelayURL == "" {
 		req.Fingerprint = defaultBridgeFingerprint
 	}
 	body, err := json.Marshal(req)
@@ -103,12 +104,18 @@ func DecodeClientPollRequest(data []byte) (*ClientPollRequest, error) {
 		return nil, fmt.Errorf("no supplied offer")
 	}
 
-	if message.Fingerprint == "" {
+	if message.Fingerprint != "" && message.RelayURL != "" {
+		return nil, fmt.Errorf("when RelayURL is specified, Fingerprint must be empty")
+	}
+
+	if message.Fingerprint == "" && message.RelayURL == "" {
 		message.Fingerprint = defaultBridgeFingerprint
 	}
 
-	if _, err := bridgefingerprint.FingerprintFromHexString(message.Fingerprint); err != nil {
-		return nil, fmt.Errorf("cannot decode fingerprint")
+	if message.RelayURL == "" {
+		if _, err := bridgefingerprint.FingerprintFromHexString(message.Fingerprint); err != nil {
+			return nil, fmt.Errorf("cannot decode fingerprint")
+		}
 	}
 
 	switch message.NAT {

@@ -49,11 +49,12 @@ var (
 	sid = "ymbcCMto7KHNGYlp"
 )
 
-func createClientOffer(sdp, nat, fingerprint string) (*bytes.Reader, error) {
+func createClientOffer(sdp, nat, fingerprint string, relayURL string) (*bytes.Reader, error) {
 	clientRequest := &messages.ClientPollRequest{
 		Offer:       sdp,
 		NAT:         nat,
 		Fingerprint: fingerprint,
+		RelayURL:    relayURL,
 	}
 	encOffer, err := clientRequest.EncodeClientPollRequest()
 	if err != nil {
@@ -83,9 +84,11 @@ func decodeAMPArmorToString(r io.Reader) (string, error) {
 
 func TestBroker(t *testing.T) {
 
-	defaultBridgeValue, _ := hex.DecodeString("2B280B23E1107BB62ABFC40DDCC8824814F80A72")
+	defaultBridgeString := "2B280B23E1107BB62ABFC40DDCC8824814F80A72"
+	defaultBridgeValue, _ := hex.DecodeString(defaultBridgeString)
 	var defaultBridge [20]byte
 	copy(defaultBridge[:], defaultBridgeValue)
+	defaultBridgeUrl := "wss://snowflake.torproject.net/"
 
 	Convey("Context", t, func() {
 		buf := new(bytes.Buffer)
@@ -133,7 +136,7 @@ func TestBroker(t *testing.T) {
 
 		Convey("Responds to HTTP client offers...", func() {
 			w := httptest.NewRecorder()
-			data, err := createClientOffer(sdp, NATUnknown, "")
+			data, err := createClientOffer(sdp, NATUnknown, "", "")
 			r, err := http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 
@@ -189,7 +192,7 @@ client-sqs-ips
 
 			Convey("with unrestricted proxy to unrestricted client if there are no restricted proxies", func() {
 				snowflake := ctx.AddSnowflake("test", "", NATUnrestricted, 0)
-				offerData, err := createClientOffer(sdp, NATUnrestricted, "")
+				offerData, err := createClientOffer(sdp, NATUnrestricted, "", "")
 				So(err, ShouldBeNil)
 				r, err := http.NewRequest("POST", "snowflake.broker/client", offerData)
 
@@ -209,6 +212,158 @@ client-sqs-ips
 
 				<-done
 				So(w.Body.String(), ShouldEqual, `{"answer":"test answer"}`)
+			})
+
+			Convey("when fingerprint is specified", func() {
+				data, err := createClientOffer(sdp, NATUnknown, defaultBridgeString, "")
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+
+				done := make(chan bool)
+				snowflake := ctx.AddSnowflake("test", "", NATUnrestricted, 0)
+				go func() {
+					clientOffers(i, w, r)
+					done <- true
+				}()
+				offer := <-snowflake.offerChannel
+
+				So(offer.sdp, ShouldResemble, []byte(sdp))
+				So(offer.relayURL, ShouldEqual, defaultBridgeUrl)
+
+				snowflake.answerChannel <- "test answer"
+				<-done
+
+				So(w.Code, ShouldEqual, http.StatusOK)
+				So(w.Body.String(), ShouldEqual, `{"answer":"test answer"}`)
+			})
+
+			Convey("when relayURL is specified", func() {
+				data, err := createClientOffer(
+					sdp,
+					NATUnknown,
+					"",
+					"wss://imaginary-42-snowflake.torproject.org/test?test=test",
+				)
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+
+				done := make(chan bool)
+				snowflake := ctx.AddSnowflake("test", "", NATUnrestricted, 0)
+				go func() {
+					clientOffers(i, w, r)
+					done <- true
+				}()
+				offer := <-snowflake.offerChannel
+				So(offer.sdp, ShouldResemble, []byte(sdp))
+				So(
+					offer.relayURL,
+					ShouldEqual,
+					"wss://imaginary-42-snowflake.torproject.org/test?test=test",
+				)
+				snowflake.answerChannel <- "test answer"
+				<-done
+				So(w.Body.String(), ShouldEqual, `{"answer":"test answer"}`)
+				So(w.Code, ShouldEqual, http.StatusOK)
+			})
+
+			Convey("when relayURL is specified with an arbitrary port", func() {
+				data, err := createClientOffer(
+					sdp,
+					NATUnknown,
+					"",
+					"wss://imaginary-42-snowflake.torproject.org:9999/test?test=test",
+				)
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+
+				done := make(chan bool)
+				snowflake := ctx.AddSnowflake("test", "", NATUnrestricted, 0)
+				go func() {
+					clientOffers(i, w, r)
+					done <- true
+				}()
+				offer := <-snowflake.offerChannel
+				So(offer.sdp, ShouldResemble, []byte(sdp))
+				So(
+					offer.relayURL,
+					ShouldEqual,
+					"wss://imaginary-42-snowflake.torproject.org:9999/test?test=test",
+				)
+				snowflake.answerChannel <- "test answer"
+				<-done
+				So(w.Body.String(), ShouldEqual, `{"answer":"test answer"}`)
+				So(w.Code, ShouldEqual, http.StatusOK)
+			})
+
+			Convey("with error if relayURL does not match the allowed pattern", func() {
+				buf := new(bytes.Buffer)
+				ctx := NewBrokerContext(log.New(buf, "", 0), "", "")
+				i := &IPC{ctx}
+				// ctx.InstallBridgeListProfile()
+				ctx.allowedRelayPattern = "snowflake.torproject.org$"
+
+				data, err := createClientOffer(sdp, NATUnknown, "", "wss://other.com")
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+				clientOffers(i, w, r)
+				// So(w.Code, ShouldEqual, http.StatusBadRequest)
+				So(
+					w.Body.String(),
+					ShouldEqual,
+					`{"error":"Unacceptable relayURL. Allowed pattern is: snowflake.torproject.org$"}`,
+				)
+			})
+
+			Convey("with error if relayURL is invalid", func() {
+				data, err := createClientOffer(sdp, NATUnknown, "", ":$:/_^:")
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+				clientOffers(i, w, r)
+				// So(w.Code, ShouldEqual, http.StatusBadRequest)
+				So(w.Body.String(), ShouldStartWith, `{"error":"Invalid relayURL:`)
+			})
+
+			Convey("with error if both fingerprint and relayURL are specified", func() {
+				data, err := createClientOffer(sdp, NATUnknown, defaultBridgeString, defaultBridgeUrl)
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+				clientOffers(i, w, r)
+				// So(w.Code, ShouldEqual, http.StatusBadRequest)
+				So(
+					w.Body.String(),
+					ShouldEqual,
+					`{"error":"when RelayURL is specified, Fingerprint must be empty"}`,
+				)
+			})
+
+			Convey("with error if fingerpring is unknown to broker", func() {
+				data, err := createClientOffer(
+					sdp,
+					NATUnknown,
+					"ABCDEFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+					"",
+				)
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+				clientOffers(i, w, r)
+				So(w.Body.String(), ShouldEqual, `{"error":"bridge with requested fingerprint is unknown to the broker"}`)
+			})
+
+			Convey("with error if fingerpring is invalid", func() {
+				data, err := createClientOffer(sdp, NATUnknown, "AAA", "")
+				So(err, ShouldBeNil)
+				r, err := http.NewRequest("POST", "snowflake.broker/client", data)
+				So(err, ShouldBeNil)
+				clientOffers(i, w, r)
+				// So(w.Code, ShouldBeBetween, 400, 599)
+				So(w.Body.String(), ShouldEqual, `{"error":"cannot decode fingerprint"}`)
 			})
 
 			Convey("Times out when no proxy responds.", func() {
@@ -413,7 +568,7 @@ client-sqs-ips
 				// Pass a fake client offer to this proxy
 				p := <-ctx.proxyPolls
 				So(p.id, ShouldEqual, "ymbcCMto7KHNGYlp")
-				p.offerChannel <- &ClientOffer{sdp: []byte("fake offer"), fingerprint: defaultBridge[:]}
+				p.offerChannel <- &ClientOffer{sdp: []byte("fake offer"), relayURL: defaultBridgeUrl}
 				<-done
 				So(w.Code, ShouldEqual, http.StatusOK)
 				So(w.Body.String(), ShouldEqual, `{"Status":"client match","Offer":"fake offer","NAT":"","RelayURL":"wss://snowflake.torproject.net/"}`)
@@ -509,7 +664,7 @@ client-sqs-ips
 
 			// Client offer
 			wc := httptest.NewRecorder()
-			datac, err := createClientOffer(sdp, NATUnknown, "")
+			datac, err := createClientOffer(sdp, NATUnknown, "", "")
 			So(err, ShouldBeNil)
 			rc, err := http.NewRequest("POST", "snowflake.broker/client", datac)
 			So(err, ShouldBeNil)
@@ -564,7 +719,7 @@ client-sqs-ips
 
 			// Client request blocks until proxy answer arrives.
 			wC := httptest.NewRecorder()
-			dataC, err := createClientOffer(sdp, NATUnknown, "")
+			dataC, err := createClientOffer(sdp, NATUnknown, "", "")
 			So(err, ShouldBeNil)
 			rC, err := http.NewRequest("POST", "snowflake.broker/client", dataC)
 			So(err, ShouldBeNil)
@@ -744,7 +899,7 @@ snowflake-ips-nat-unknown 1
 		//Test addition of client failures
 		Convey("for no proxies available", func() {
 			w := httptest.NewRecorder()
-			data, err := createClientOffer(sdp, NATUnknown, "")
+			data, err := createClientOffer(sdp, NATUnknown, "", "")
 			So(err, ShouldBeNil)
 			r, err := http.NewRequest("POST", "snowflake.broker/client", data)
 			r.RemoteAddr = "129.97.208.23:8888" //CA geoip
@@ -795,7 +950,7 @@ snowflake-ips-nat-unknown 0
 		//Test addition of client matches
 		Convey("for client-proxy match", func() {
 			w := httptest.NewRecorder()
-			data, err := createClientOffer(sdp, NATUnknown, "")
+			data, err := createClientOffer(sdp, NATUnknown, "", "")
 			So(err, ShouldBeNil)
 			r, err := http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
@@ -817,56 +972,56 @@ snowflake-ips-nat-unknown 0
 		//Test rounding boundary
 		Convey("binning boundary", func() {
 			w := httptest.NewRecorder()
-			data, err := createClientOffer(sdp, NATRestricted, "")
+			data, err := createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err := http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
 			clientOffers(i, w, r)
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
@@ -876,7 +1031,7 @@ snowflake-ips-nat-unknown 0
 			So(buf.String(), ShouldContainSubstring, "client-denied-count 8\nclient-restricted-denied-count 8\nclient-unrestricted-denied-count 0\n")
 
 			w = httptest.NewRecorder()
-			data, err = createClientOffer(sdp, NATRestricted, "")
+			data, err = createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
@@ -959,7 +1114,7 @@ snowflake-ips-nat-unknown 0
 
 		Convey("client failures by NAT type", func() {
 			w := httptest.NewRecorder()
-			data, err := createClientOffer(sdp, NATRestricted, "")
+			data, err := createClientOffer(sdp, NATRestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err := http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
@@ -972,7 +1127,7 @@ snowflake-ips-nat-unknown 0
 			buf.Reset()
 			ctx.metrics.zeroMetrics()
 
-			data, err = createClientOffer(sdp, NATUnrestricted, "")
+			data, err = createClientOffer(sdp, NATUnrestricted, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)
@@ -985,7 +1140,7 @@ snowflake-ips-nat-unknown 0
 			buf.Reset()
 			ctx.metrics.zeroMetrics()
 
-			data, err = createClientOffer(sdp, NATUnknown, "")
+			data, err = createClientOffer(sdp, NATUnknown, "", "")
 			So(err, ShouldBeNil)
 			r, err = http.NewRequest("POST", "snowflake.broker/client", data)
 			So(err, ShouldBeNil)

@@ -120,8 +120,18 @@ func socksAcceptLoop(ln *pt.SocksListener, config sf.ClientConfig, shutdown chan
 			if arg, ok := conn.Req.Args.Get("utls-imitate"); ok {
 				config.UTLSClientID = arg
 			}
+			if arg, ok := conn.Req.Args.Get("relay-url"); ok {
+				config.RelayURL = arg
+			}
 			if arg, ok := conn.Req.Args.Get("fingerprint"); ok {
 				config.BridgeFingerprint = arg
+				if config.RelayURL != "" && config.BridgeFingerprint != "" {
+					conn.Reject()
+					log.Print(
+						"Do not specify both `fingerprint` and `relay-url` at the same time",
+					)
+					return
+				}
 			}
 			transport, err := sf.NewSnowflakeClient(config)
 			if err != nil {

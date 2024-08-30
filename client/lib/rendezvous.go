@@ -49,6 +49,7 @@ type BrokerChannel struct {
 	natType            string
 	lock               sync.Mutex
 	BridgeFingerprint  string
+	RelayURL           string
 }
 
 // We make a copy of DefaultTransport because we want the default Dial
@@ -114,11 +115,22 @@ func newBrokerChannelFromConfig(config ClientConfig) (*BrokerChannel, error) {
 		return nil, err
 	}
 
+	bridgeFingerprint := config.BridgeFingerprint
+	if config.RelayURL != "" {
+		if config.BridgeFingerprint != "" {
+			log.Print(
+				"Warning: both RelayURL and BridgeFingerprint are specified. " +
+					"BridgeFingerprint will have no effect.")
+		}
+		bridgeFingerprint = ""
+	}
+
 	return &BrokerChannel{
 		Rendezvous:         rendezvous,
 		keepLocalAddresses: config.KeepLocalAddresses,
 		natType:            nat.NATUnknown,
-		BridgeFingerprint:  config.BridgeFingerprint,
+		BridgeFingerprint:  bridgeFingerprint,
+		RelayURL:           config.RelayURL,
 	}, nil
 }
 
@@ -130,7 +142,7 @@ func (bc *BrokerChannel) Negotiate(
 ) (
 	*webrtc.SessionDescription, error,
 ) {
-	encReq, err := preparePollRequest(offer, natTypeToSend, bc.BridgeFingerprint)
+	encReq, err := preparePollRequest(offer, natTypeToSend, bc.BridgeFingerprint, bc.RelayURL)
 	if err != nil {
 		return nil, err
 	}
@@ -158,15 +170,18 @@ func preparePollRequest(
 	offer *webrtc.SessionDescription,
 	natType string,
 	bridgeFingerprint string,
+	relayURL string,
 ) (encReq []byte, err error) {
 	offerSDP, err := util.SerializeSessionDescription(offer)
 	if err != nil {
 		return nil, err
 	}
 	req := &messages.ClientPollRequest{
-		Offer:       offerSDP,
-		NAT:         natType,
+		Offer: offerSDP,
+		NAT:   natType,
+		// Only either one of these is non-empty:
 		Fingerprint: bridgeFingerprint,
+		RelayURL:    relayURL,
 	}
 	encReq, err = req.EncodeClientPollRequest()
 	return

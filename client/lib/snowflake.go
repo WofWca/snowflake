@@ -116,6 +116,10 @@ type ClientConfig struct {
 	// BridgeFingerprint is the fingerprint of the bridge that the client will eventually
 	// connect to, as specified in the Bridge line of the torrc.
 	BridgeFingerprint string
+	// RelayURL is similar to BridgeFingerprint, but specifies the Snowflake server
+	// (bridge / relay) directly by its URL instead of the fingerprint.
+	// If RelayURL is specified, BridgeFingerprint will have no effect.
+	RelayURL string
 	// CommunicationProxy is the proxy address for network communication
 	CommunicationProxy *url.URL
 }

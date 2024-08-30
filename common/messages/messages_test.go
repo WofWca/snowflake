@@ -325,15 +325,19 @@ func TestEncodeProxyAnswerResponse(t *testing.T) {
 func TestDecodeClientPollRequest(t *testing.T) {
 	Convey("Context", t, func() {
 		for _, test := range []struct {
-			natType string
-			offer   string
-			data    string
-			err     error
+			natType     string
+			offer       string
+			fingerprint string
+			relayURL    string
+			data        string
+			err         error
 		}{
 			{
 				//version 1.0 client message
 				"unknown",
 				"fake",
+				defaultBridgeFingerprint,
+				"",
 				`1.0
 {"nat":"unknown","offer":"fake"}`,
 				nil,
@@ -342,6 +346,8 @@ func TestDecodeClientPollRequest(t *testing.T) {
 				//version 1.0 client message
 				"unknown",
 				"fake",
+				defaultBridgeFingerprint,
+				"",
 				`1.0
 {"offer":"fake"}`,
 				nil,
@@ -350,6 +356,8 @@ func TestDecodeClientPollRequest(t *testing.T) {
 				//unknown version
 				"",
 				"",
+				defaultBridgeFingerprint,
+				"",
 				`{"version":"2.0"}`,
 				fmt.Errorf(""),
 			},
@@ -357,8 +365,40 @@ func TestDecodeClientPollRequest(t *testing.T) {
 				//no offer
 				"",
 				"",
+				defaultBridgeFingerprint,
+				"",
 				`1.0
 {"nat":"unknown"}`,
+				fmt.Errorf(""),
+			},
+			{
+				// `fingerprint` specified
+				"unknown",
+				"fake",
+				"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+				"",
+				`1.0
+{"nat":"unknown","offer":"fake","fingerprint":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`,
+				nil,
+			},
+			{
+				// `relayURL` specified
+				"unknown",
+				"fake",
+				"",
+				"wss://example.com/test?test=test",
+				`1.0
+{"nat":"unknown","offer":"fake","relayURL":"wss://example.com/test?test=test"}`,
+				nil,
+			},
+			{
+				// Both `relayURL` and `fingerprint` specified
+				"unknown",
+				"fake",
+				"",
+				"",
+				`1.0
+{"nat":"unknown","offer":"fake","relayURL":"wss://example.com/test?test=test","fingerprint":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`,
 				fmt.Errorf(""),
 			},
 		} {
@@ -367,6 +407,8 @@ func TestDecodeClientPollRequest(t *testing.T) {
 			if test.err == nil {
 				So(req.NAT, ShouldResemble, test.natType)
 				So(req.Offer, ShouldResemble, test.offer)
+				So(req.Fingerprint, ShouldResemble, test.fingerprint)
+				So(req.RelayURL, ShouldResemble, test.relayURL)
 			}
 		}
 
@@ -379,11 +421,13 @@ func TestEncodeClientPollRequests(t *testing.T) {
 			natType     string
 			offer       string
 			fingerprint string
+			relayURL    string
 			err         error
 		}{
 			{
 				"unknown",
 				"fake",
+				"",
 				"",
 				nil,
 			},
@@ -391,12 +435,30 @@ func TestEncodeClientPollRequests(t *testing.T) {
 				"unknown",
 				"fake",
 				defaultBridgeFingerprint,
+				"",
 				nil,
 			},
 			{
 				"unknown",
 				"fake",
 				"123123",
+				"",
+				fmt.Errorf(""),
+			},
+			{
+				// `RelayURL` specified, `Fingerprint` omitted
+				"unknown",
+				"fake",
+				"",
+				"wss://example.com/test?test=test",
+				nil,
+			},
+			{
+				// Both `RelayURL` and `Fingerprint` specified
+				"unknown",
+				"fake",
+				defaultBridgeFingerprint,
+				"wss://example.com/",
 				fmt.Errorf(""),
 			},
 		} {
@@ -404,6 +466,7 @@ func TestEncodeClientPollRequests(t *testing.T) {
 				NAT:         test.natType,
 				Offer:       test.offer,
 				Fingerprint: test.fingerprint,
+				RelayURL:    test.relayURL,
 			}
 			b, err := req1.EncodeClientPollRequest()
 			So(err, ShouldBeNil)
@@ -417,6 +480,7 @@ func TestEncodeClientPollRequests(t *testing.T) {
 					fingerprint = defaultBridgeFingerprint
 				}
 				So(req2.Fingerprint, ShouldEqual, fingerprint)
+				So(req2.RelayURL, ShouldEqual, req1.RelayURL)
 			}
 		}
 	})

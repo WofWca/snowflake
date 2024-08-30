@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/bridgefingerprint"
+	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/namematcher"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/messages"
@@ -130,17 +132,7 @@ func (i *IPC) ProxyPolls(arg messages.Arg, response *[]byte) error {
 	}
 
 	i.ctx.metrics.promMetrics.ProxyPollTotal.With(prometheus.Labels{"nat": natType, "status": "matched"}).Inc()
-	var relayURL string
-	bridgeFingerprint, err := bridgefingerprint.FingerprintFromBytes(offer.fingerprint)
-	if err != nil {
-		return messages.ErrBadRequest
-	}
-	if info, err := i.ctx.bridgeList.GetBridgeInfo(bridgeFingerprint); err != nil {
-		return err
-	} else {
-		relayURL = info.WebSocketAddress
-	}
-	b, err = messages.EncodePollResponseWithRelayURL(string(offer.sdp), true, offer.natType, relayURL, "")
+	b, err = messages.EncodePollResponseWithRelayURL(string(offer.sdp), true, offer.natType, offer.relayURL, "")
 	if err != nil {
 		return messages.ErrInternal
 	}
@@ -174,24 +166,51 @@ func (i *IPC) ClientOffers(arg messages.Arg, response *[]byte) error {
 		sdp:     []byte(req.Offer),
 	}
 
-	fingerprint, err := hex.DecodeString(req.Fingerprint)
-	if err != nil {
-		return sendClientResponse(&messages.ClientPollResponse{Error: err.Error()}, response)
-	}
+	var finalRelayURL string
+	if req.RelayURL != "" {
+		// The following check is similar to the one that the proxy performs.
 
-	BridgeFingerprint, err := bridgefingerprint.FingerprintFromBytes(fingerprint)
-	if err != nil {
-		return sendClientResponse(&messages.ClientPollResponse{Error: err.Error()}, response)
-	}
+		matcher := namematcher.NewNameMatcher(i.ctx.allowedRelayPattern)
+		parsedRelayURL, err := url.Parse(req.RelayURL)
+		if err != nil {
+			return sendClientResponse(&messages.ClientPollResponse{Error: "Invalid relayURL: " + err.Error()}, response)
+		}
 
-	if _, err := i.ctx.GetBridgeInfo(BridgeFingerprint); err != nil {
-		return sendClientResponse(
-			&messages.ClientPollResponse{Error: err.Error()},
-			response,
-		)
-	}
+		// Same check as in proxy.
+		if !matcher.IsMember(parsedRelayURL.Host) {
+			return sendClientResponse(
+				&messages.ClientPollResponse{
+					Error: "Unacceptable relayURL. Allowed pattern is: " + i.ctx.allowedRelayPattern,
+				},
+				response,
+			)
+		}
 
-	offer.fingerprint = BridgeFingerprint.ToBytes()
+		finalRelayURL = req.RelayURL
+	} else {
+		fingerprint, err := hex.DecodeString(req.Fingerprint)
+		if err != nil {
+			return sendClientResponse(&messages.ClientPollResponse{Error: err.Error()}, response)
+		}
+
+		BridgeFingerprint, err := bridgefingerprint.FingerprintFromBytes(fingerprint)
+		if err != nil {
+			return sendClientResponse(&messages.ClientPollResponse{Error: err.Error()}, response)
+		}
+
+		bridgeInfo, err := i.ctx.GetBridgeInfo(BridgeFingerprint)
+		if err != nil {
+			return sendClientResponse(
+				&messages.ClientPollResponse{Error: err.Error()},
+				response,
+			)
+		}
+
+		finalRelayURL = bridgeInfo.WebSocketAddress
+	}
+	// At this point `offer.relayURL` is validated, i.e. checked against
+	// allowedRelayPattern, or taken from the hard-coded list of bridges.
+	offer.relayURL = finalRelayURL
 
 	snowflake := i.matchSnowflake(offer.natType)
 	if snowflake != nil {

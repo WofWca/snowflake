@@ -40,6 +40,8 @@ Bridge snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerpri
 
 `fingerprint=` is the fingerprint of bridge that the client will ultimately be connecting to.
 
+`relay-url=` is similar to `fingerprint=`, but specifies the Snowflake server (bridge / relay) directly by URL instead of the fingerprint. If `relay-url=` is specified, `fingerprint=` will have no effect.
+
 `url=` is the URL of a broker instance. If you would like to try out Snowflake with your own broker, simply provide the URL of your broker instance with this option.
 
 `fronts=` is an optional, comma-seperated list front domains for the broker request.
