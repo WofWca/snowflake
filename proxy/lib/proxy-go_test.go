@@ -536,16 +536,18 @@ func TestUtilityFuncs(t *testing.T) {
 			{pattern: "$", allowNonTLS: true, targetURL: "ws://100.111.1.1/", expects: fmt.Errorf("")},
 			{pattern: "192.168.1.100$", allowPrivateAddresses: true, allowNonTLS: true, targetURL: "ws://192.168.1.100/test?test=test", expects: nil},
 			{pattern: "localhost$", allowPrivateAddresses: true, allowNonTLS: true, targetURL: "ws://localhost/test?test=test", expects: nil},
-			{pattern: "::1$", allowPrivateAddresses: true, allowNonTLS: true, targetURL: "ws://[::1]/test?test=test", expects: nil},
+			{pattern: "[::1]$", allowPrivateAddresses: true, allowNonTLS: true, targetURL: "ws://[::1]/test?test=test", expects: nil},
 			// Multicast IP address. `checkIsRelayURLAcceptable` allows it,
 			// but it's not valid in the context of WebSocket
 			{pattern: "255.255.255.255$", allowPrivateAddresses: true, allowNonTLS: true, targetURL: "ws://255.255.255.255/test?test=test", expects: nil},
 
 			// Port
-			{pattern: "^snowflake.torproject.net$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:8080/test?test=test#test", expects: nil},
-			// This currently doesn't work as we only check hostname.
-			// {pattern: "^snowflake.torproject.net:443$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:443", expects: nil},
-			// {pattern: "^snowflake.torproject.net:443$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:9999", expects: fmt.Errorf("")},
+			{pattern: "snowflake.torproject.net$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:9999", expects: fmt.Errorf("")},
+			{pattern: "snowflake.torproject.net:443$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:9999", expects: fmt.Errorf("")},
+			{pattern: "^snowflake.torproject.net$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net", expects: nil},
+			{pattern: "^snowflake.torproject.net:443$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:443", expects: nil},
+			{pattern: "^snowflake.torproject.net$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:443", expects: fmt.Errorf("")},
+			{pattern: "^snowflake.torproject.net:7901$", allowNonTLS: false, targetURL: "wss://snowflake.torproject.net:7901", expects: nil},
 
 			// Any URL
 			{pattern: "$", allowNonTLS: false, targetURL: "wss://any.com/test?test=test#test", expects: nil},
