@@ -38,8 +38,8 @@ Usage of ./proxy:
   -allow-proxying-to-private-addresses
         allow forwarding client connections to private IP addresses.
         Useful when a Snowflake server (relay) is hosted on the same private network as this proxy.
-  -allowed-relay-hostname-pattern string
-        this proxy will only be allowed to forward client connections to relays (servers) whose URL matches this pattern.
+  -allowed-relay-host-pattern string
+        this proxy will only be allowed to forward client connections to relays (servers) whose URL's host (hostname and, optionally, port) matches this pattern.
         Note that a pattern "example.com$" will match "subdomain.example.com" as well as "other-domain-example.com".
         In order to only match "example.com", prefix the pattern with "^": "^example.com$" (default "snowflake.torproject.net$")
   -broker URL
