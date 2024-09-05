@@ -618,7 +618,7 @@ func (sf *SnowflakeProxy) runSession(sid string) {
 	log.Printf("Received Offer From Broker: \n\t%s", strings.ReplaceAll(offer.SDP, "\n", "\n\t"))
 
 	if relayURL != "" {
-		if err := checkIsRelayURLAcceptable(sf.RelayDomainNamePattern, sf.AllowProxyingToPrivateAddresses, sf.AllowNonTLSRelay, relayURL); err != nil {
+		if err := basicCheckIsRelayURLAcceptable(sf.RelayDomainNamePattern, sf.AllowProxyingToPrivateAddresses, sf.AllowNonTLSRelay, relayURL); err != nil {
 			log.Printf("bad offer from broker: %v", err)
 			tokens.ret()
 			return
@@ -659,7 +659,8 @@ func (sf *SnowflakeProxy) runSession(sid string) {
 }
 
 // Returns nil if the relayURL is acceptable
-func checkIsRelayURLAcceptable(
+// This is a pure function (no side effects).
+func basicCheckIsRelayURLAcceptable(
 	allowedHostNamePattern string,
 	allowPrivateIPs bool,
 	allowNonTLSRelay bool,
