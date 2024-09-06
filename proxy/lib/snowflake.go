@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -44,6 +45,7 @@ import (
 	"github.com/pion/transport/v2/stdnet"
 	"github.com/pion/webrtc/v3"
 
+	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/consenthandshake"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/event"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/messages"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/namematcher"
@@ -77,6 +79,8 @@ const (
 	// Amount of time after sending an SDP answer before the proxy assumes the
 	// client is not going to connect
 	dataChannelTimeout = 20 * time.Second
+
+	relayConsentTieout = 5 * time.Second
 
 	// Maximum number of bytes to be read from an HTTP request
 	readLimit = 100000
@@ -147,6 +151,10 @@ type SnowflakeProxy struct {
 	// as this proxy.
 	AllowProxyingToPrivateAddresses bool
 	AllowNonTLSRelay                bool
+	// Prior to connecting to the relay and passing arbitrary client data to it,
+	// make a benign HTTP HEAD request to the relay host to ensure that it
+	// is indeed a Snowflake server and not something else.
+	RequireRelayConsent bool
 	// NATProbeURL is the URL of the probe service we use for NAT checks
 	NATProbeURL string
 	// NATTypeMeasurementInterval is time before NAT type is retested
@@ -623,6 +631,24 @@ func (sf *SnowflakeProxy) runSession(sid string) {
 			tokens.ret()
 			return
 		}
+
+		if sf.RequireRelayConsent {
+			url, err := url.Parse(relayURL)
+			if err != nil {
+				// This should not ever happen since `basicCheckIsRelayURLAcceptable`
+				// currently ensures that the URL is valid.
+				log.Printf("bad offer from broker: failed to parse relayURL: %v", err)
+				tokens.ret()
+				return
+			}
+			if err := askServerForConsent(url); err != nil {
+				log.Printf("Server \"%v\" did not consent to a Snowflake connection: %v", relayURL, err)
+				tokens.ret()
+				return
+			}
+		} else {
+			log.Printf("Skipping relay consent request for \"%v\"", relayURL)
+		}
 	}
 
 	dataChan := make(chan struct{})
@@ -692,6 +718,186 @@ func basicCheckIsRelayURLAcceptable(
 	if !matcher.IsMember(parsedRelayURL.Hostname()) {
 		return fmt.Errorf("rejected Relay URL: hostname does not match allowed pattern \"%v\"", allowedHostNamePattern)
 	}
+	return nil
+}
+
+// Sends a special HTTP request to `relayURL` to ensure
+// it is a Snowflake server and not something else.
+// This needs to be done prior to performing the actual Snowflake WebSocket
+// connection, i.e. before the client can start sending arbitrary data
+// to the server on our behalf.
+//
+// Returns nil if consent is granted.
+//
+// If a consent is not granted, an error is returned with a delay
+// in order to mitigate timing attacks.
+//
+// For example, without this delay, if the target URL is not a Snowflake server,
+// the client could, based on response times,
+// figure out whether the server is reachable,
+// and even what kind of server it is.
+// This is especially important for private networks (although
+// we have a separate option to disable access to servers
+// in the private network).
+func askServerForConsent(relayURL *url.URL) error {
+	timeoutCh := time.After(relayConsentTieout)
+	consentGranted := make(chan (interface{}))
+
+	go func() {
+		err := doConsentRequest(relayURL, relayConsentTieout-1*time.Second)
+		if err == nil {
+			consentGranted <- struct{}{}
+		} else {
+			// Just log and wait for timeout, and
+			// do NOT expose the underlying error to the caller.
+			log.Print(err)
+		}
+	}()
+
+	select {
+	case <-consentGranted:
+		return nil
+	case <-timeoutCh:
+		// We do not want to return the underlying error to the caller,
+		// again, for security reasons.
+		return fmt.Errorf("consent not granted")
+	}
+}
+func doConsentRequest(relayURL *url.URL, requestTimeout time.Duration) error {
+	var scheme string
+	switch relayURL.Scheme {
+	case "ws":
+		scheme = "http"
+	case "wss":
+		scheme = "https"
+	default:
+		return fmt.Errorf("doConsentRequest: unsupported scheme for \"%v\"", relayURL.String())
+	}
+	consentUrlStruct := url.URL{
+		Scheme: scheme,
+		// Opaque:
+		// User:
+		Host: relayURL.Host,
+		// The path doesn't matter to an actual Snowflake server,
+		// but we want to make sure that the request is benign
+		// to the potentially non-Snowflake server.
+		Path: "/are_you_a_snowflake_server",
+		// RawPath:
+		// OmitHost:
+		// ForceQuery:
+		// RawQuery:
+		// Fragment:
+		// RawFragment:
+	}
+	consentUrl := consentUrlStruct.String()
+
+	log.Printf("Asking relay \"%v\" for consent to accept a Snowflake connection. Requesting \"%v\"", relayURL, consentUrl)
+
+	errorPrefix := fmt.Sprintf(
+		"consent request for relay \"%v\", request \"%v\" failed: ",
+		relayURL.String(),
+		consentUrl,
+	)
+
+	httpClient := &http.Client{
+		Timeout: requestTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// For security reasons.
+			// I do not have a particular example in mind,
+			// but let's be conservative.
+			return fmt.Errorf("the server replied with a redirect")
+		},
+	}
+
+	req, err := http.NewRequest(http.MethodHead, consentUrl, nil)
+	if err != nil {
+		// This should not ever happen though.
+		return fmt.Errorf(errorPrefix+"NewRequest() failed: %v", err)
+	}
+
+	const challengeNumBytes = consenthandshake.MaxChallengeLengthBytes
+	// FYI we'll mutate this when the response arrives.
+	challengeBytes := [challengeNumBytes]byte{}
+	_, err = rand.Read(challengeBytes[:])
+	if err != nil {
+		return err
+	}
+	challengeStr := hex.EncodeToString(challengeBytes[:])
+	req.Header.Add(consenthandshake.RequestHeader, challengeStr)
+
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf(errorPrefix+"request failed: %v", err)
+	}
+
+	// Make sure to read and close the body to keep-alive the connection,
+	// for the upcoming WebSocket connection.
+	// See `httpClient.Do()` docstring.
+	// Although I'm not sure if we need to do this for a HEAD request.
+	dummyBuf := [1]byte{}
+	// We expect `bytesRead` to be 0 and error to be non-nil.
+	// Either way we want to limit the amount of bytes read,
+	// e.g. in case it's some large file that the server responds with.
+	bytesRead, _ := res.Body.Read(dummyBuf[:])
+	if bytesRead > 0 {
+		return fmt.Errorf(errorPrefix + "received non-empty body for a HEAD request")
+	}
+	err = res.Body.Close()
+	if err != nil {
+		log.Printf(
+			"Error closing body of consent request to \"%v\": %v",
+			relayURL.String(),
+			err,
+		)
+		// Let's not error out here.
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf(errorPrefix+"returned status code is %v", res.StatusCode)
+	}
+	challengeResponseStr := res.Header.Get(consenthandshake.ResponseHeader)
+	if challengeResponseStr == "" {
+		return fmt.Errorf(
+			errorPrefix+"the server did not include the \"%v\" header in the response",
+			consenthandshake.ResponseHeader,
+		)
+	}
+	if len(challengeResponseStr) != len(challengeStr) {
+		return fmt.Errorf(
+			"the server replied to the consent request"+
+				" with the appropriate consent header"+
+				" but its value \"%v\" had incorrect length: %v. Expected %v",
+			challengeResponseStr,
+			len(challengeResponseStr),
+			len(challengeStr),
+		)
+	}
+	challengeResponseBytes, err := hex.DecodeString(challengeResponseStr)
+	if err != nil {
+		return fmt.Errorf(
+			errorPrefix+
+				"the server replied to the consent request"+
+				" with the appropriate consent header"+
+				" but its value \"%v\" was invalid: %v",
+			challengeResponseStr,
+			err,
+		)
+	}
+
+	consenthandshake.XorBytes(challengeBytes[:], challengeResponseBytes[:])
+	if challengeBytes != consenthandshake.ChallengeKey {
+		return fmt.Errorf(
+			errorPrefix+
+				"the server replied to the consent request"+
+				" but the challenge response \"%v\" was not correct",
+			challengeResponseStr,
+		)
+	}
+
+	log.Printf(
+		"Relay \"%v\" confirmed consent to accept a Snowflake connection!",
+		relayURL.String(),
+	)
 	return nil
 }
 
