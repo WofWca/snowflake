@@ -142,14 +142,12 @@ func (bc *BrokerChannel) Negotiate(offer *webrtc.SessionDescription) (
 	}
 
 	// Encode the client poll request.
-	bc.lock.Lock()
 	req := &messages.ClientPollRequest{
 		Offer:       offerSDP,
-		NAT:         bc.natType,
+		NAT:         bc.getNATType(),
 		Fingerprint: bc.BridgeFingerprint,
 	}
 	encReq, err := req.EncodeClientPollRequest()
-	bc.lock.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +176,12 @@ func (bc *BrokerChannel) SetNATType(NATType string) {
 	bc.natType = NATType
 	bc.lock.Unlock()
 	log.Printf("NAT Type: %s", NATType)
+}
+
+func (bc *BrokerChannel) getNATType() string {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	return bc.natType
 }
 
 // WebRTCDialer implements the |Tongue| interface to catch snowflakes, using BrokerChannel.
