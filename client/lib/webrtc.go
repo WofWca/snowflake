@@ -178,7 +178,7 @@ func (c *WebRTCPeer) connect(config *webrtc.Configuration, broker *BrokerChannel
 		return err
 	}
 
-	answer, err := broker.Negotiate(localDescription)
+	answer, onConnectionResult, err := broker.Negotiate(localDescription)
 	c.eventsLogger.OnNewSnowflakeEvent(event.EventOnBrokerRendezvous{
 		WebRTCRemoteDescription: answer,
 		Error:                   err,
@@ -196,9 +196,11 @@ func (c *WebRTCPeer) connect(config *webrtc.Configuration, broker *BrokerChannel
 	// Wait for the datachannel to open or time out
 	select {
 	case <-c.open:
+		onConnectionResult(true)
 	case <-time.After(DataChannelTimeout):
 		c.transport.Close()
 		err = errors.New("timeout waiting for DataChannel.OnOpen")
+		onConnectionResult(false)
 		c.eventsLogger.OnNewSnowflakeEvent(event.EventOnSnowflakeConnectionFailed{Error: err})
 		return err
 	}

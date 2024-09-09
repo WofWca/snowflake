@@ -47,8 +47,13 @@ type BrokerChannel struct {
 	Rendezvous         RendezvousMethod
 	keepLocalAddresses bool
 	natType            string
-	lock               sync.Mutex
-	BridgeFingerprint  string
+	// When our NAT type is unknown, we want to try to connect to a
+	// restricted / unknown proxy initially to offload the unrestricted ones.
+	// This is useful when our STUN servers are blocked or don't support
+	// the NAT discovery feature, or if they're just slow.
+	triedRestrictedOrUnknownProxyAndFailed bool
+	lock                                   sync.Mutex
+	BridgeFingerprint                      string
 }
 
 // We make a copy of DefaultTransport because we want the default Dial
@@ -115,18 +120,25 @@ func newBrokerChannelFromConfig(config ClientConfig) (*BrokerChannel, error) {
 	}
 
 	return &BrokerChannel{
-		Rendezvous:         rendezvous,
-		keepLocalAddresses: config.KeepLocalAddresses,
-		natType:            nat.NATUnknown,
-		BridgeFingerprint:  config.BridgeFingerprint,
+		Rendezvous:                             rendezvous,
+		keepLocalAddresses:                     config.KeepLocalAddresses,
+		natType:                                nat.NATUnknown,
+		BridgeFingerprint:                      config.BridgeFingerprint,
+		triedRestrictedOrUnknownProxyAndFailed: false,
 	}, nil
 }
 
 // Negotiate uses a RendezvousMethod to send the client's WebRTC SDP offer
 // and receive a snowflake proxy WebRTC SDP answer in return.
 func (bc *BrokerChannel) Negotiate(offer *webrtc.SessionDescription) (
-	*webrtc.SessionDescription, error,
+	sd *webrtc.SessionDescription,
+	// The caller should execute this function when the proxy connection
+	// gets established or times out.
+	// This should not be called if the connection attempt was not initiated.
+	onConnectionResult func(success bool),
+	err error,
 ) {
+	onConnResult := func(success bool) {}
 	// Ideally, we could specify an `RTCIceTransportPolicy` that would handle
 	// this for us.  However, "public" was removed from the draft spec.
 	// See https://developer.mozilla.org/en-US/docs/Web/API/RTCConfiguration#RTCIceTransportPolicy_enum
@@ -138,36 +150,74 @@ func (bc *BrokerChannel) Negotiate(offer *webrtc.SessionDescription) (
 	}
 	offerSDP, err := util.SerializeSessionDescription(offer)
 	if err != nil {
-		return nil, err
+		return nil, onConnResult, err
+	}
+
+	natTypeToSend := bc.getNATType()
+	if natTypeToSend == nat.NATUnknown && !bc.triedRestrictedOrUnknownProxyAndFailed {
+		log.Print("Our NAT type is unknown, but let's try connecting to a restricted proxy once.")
+		// We track client offers' counts per country and per NAT type
+		// in `UpdateRendezvousStats`.
+		// For the sake of more clear metrics, it would be nice to
+		// let the broker know what we're doing here.
+		natTypeToSend = nat.NATUnrestricted
+		onConnResult = func(success bool) {
+			if !success {
+				// TODO do we need to acquire the lock to read / write
+				// `triedRestrictedOrUnknownProxyAndFailed`?
+				bc.triedRestrictedOrUnknownProxyAndFailed = true
+				log.Print(
+					"Tried to connect to a restricted proxy while our NAT type is unknown" +
+						" and failed. Let's not do that again.",
+				)
+			} else {
+				log.Printf(
+					"Connected to a proxy with unknown or restricted NAT type" +
+						" while our NAT type was unknown!",
+				)
+			}
+			// If the connection to a restircted proxy succeeded,
+			// it would be nice to `bc.SetNATType(nat.NATUnrestricted)`,
+			// but it might have been a proxy with an unknown NAT type,
+			// which means it might have been unrestricted.
+			// Also the proxy could have _falsly_ said that it is restricted
+			// whereas it's not.
+		}
 	}
 
 	// Encode the client poll request.
 	req := &messages.ClientPollRequest{
 		Offer:       offerSDP,
-		NAT:         bc.getNATType(),
+		NAT:         natTypeToSend,
 		Fingerprint: bc.BridgeFingerprint,
 	}
 	encReq, err := req.EncodeClientPollRequest()
 	if err != nil {
-		return nil, err
+		return nil, onConnResult, err
 	}
 
 	// Do the exchange using our RendezvousMethod.
 	encResp, err := bc.Rendezvous.Exchange(encReq)
 	if err != nil {
-		return nil, err
+		return nil, onConnResult, err
 	}
 	log.Printf("Received answer: %s", string(encResp))
 
 	// Decode the client poll response.
 	resp, err := messages.DecodeClientPollResponse(encResp)
 	if err != nil {
-		return nil, err
+		return nil, onConnResult, err
 	}
 	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
+		return nil, onConnResult, errors.New(resp.Error)
 	}
-	return util.DeserializeSessionDescription(resp.Answer)
+
+	desc, err := util.DeserializeSessionDescription(resp.Answer)
+	if err != nil {
+		return nil, onConnResult, err
+	}
+
+	return desc, onConnResult, nil
 }
 
 // SetNATType sets the NAT type of the client so we can send it to the WebRTC broker.
