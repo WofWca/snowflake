@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/consenthandshake"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/encapsulation"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/turbotunnel"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/websocketconn"
@@ -96,6 +98,29 @@ func (handler *httpHandler) lookupPacketConn(clientID turbotunnel.ClientID) *tur
 }
 
 func (handler *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	consentHandshakeChallenge := r.Header.Get(consenthandshake.RequestHeader)
+	isConsentHandshakeRequest := consentHandshakeChallenge != ""
+	if isConsentHandshakeRequest {
+		challengeResponse, err := getConsentChallengeResponse(consentHandshakeChallenge)
+
+		if err != nil {
+			// Let's still respod with "OK" and the header, and let the proxy
+			// decide if it's enough proof that we're a Snowflake server.
+			challengeResponse = err.Error()
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set(consenthandshake.ResponseHeader, challengeResponse)
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			// The proxies should check the header as it is a more reliable
+			// proof that this is a Snowflake server,
+			// but let's also write this to the body for good measure.
+			w.Write([]byte(challengeResponse))
+		}
+		return
+	}
+
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
@@ -249,4 +274,21 @@ func clientAddr(clientIPParam string) net.Addr {
 	}
 	// Add a stub port number. USERADDR requires a port number.
 	return ClientMapAddr((&net.TCPAddr{IP: clientIP, Port: 1, Zone: ""}).String())
+}
+
+// XORs the hex challengeStr with ConsentHandshakeChallengeKey,
+// which is what we should respond with to consent requests.
+func getConsentChallengeResponse(challengeStr string) (response string, err error) {
+	if len(challengeStr) > consenthandshake.MaxChallengeLengthHexChars {
+		return "", fmt.Errorf(
+			"challenge string is too long. Expected at most %v hex characters",
+			consenthandshake.MaxChallengeLengthHexChars,
+		)
+	}
+	challengeBytes, err := hex.DecodeString(challengeStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to hex decode the challenge string: %v", err)
+	}
+	consenthandshake.XorBytes(challengeBytes, consenthandshake.ChallengeKey[:])
+	return hex.EncodeToString(challengeBytes), nil
 }

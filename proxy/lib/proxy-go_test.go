@@ -568,7 +568,7 @@ func TestUtilityFuncs(t *testing.T) {
 			{pattern: "snowflake.torproject.net$", allowNonTLS: true, targetURL: "ftp://snowflake.torproject.net", expects: fmt.Errorf("")},
 		}
 		for _, v := range testingVector {
-			err := checkIsRelayURLAcceptable(v.pattern, v.allowPrivateAddresses, v.allowNonTLS, v.targetURL)
+			err := basicCheckIsRelayURLAcceptable(v.pattern, v.allowPrivateAddresses, v.allowNonTLS, v.targetURL)
 			if v.expects != nil {
 				So(err, ShouldNotBeNil)
 			} else {
