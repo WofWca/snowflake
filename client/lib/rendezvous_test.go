@@ -391,31 +391,31 @@ func TestSQSRendezvous(t *testing.T) {
 }
 
 func TestBrokerChannel(t *testing.T) {
+	answerSdp := &webrtc.SessionDescription{
+		Type: webrtc.SDPTypeAnswer,
+		SDP:  "test",
+	}
+	answerSdpStr, _ := util.SerializeSessionDescription(answerSdp)
+	serverResponse, _ := (&messages.ClientPollResponse{
+		Answer: answerSdpStr,
+	}).EncodePollResponse()
+
+	offerSdp := &webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  "test",
+	}
+
+	requestBodyChan := make(chan []byte)
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		go func() {
+			requestBodyChan <- body
+		}()
+		w.Write(serverResponse)
+	}))
+	defer mockServer.Close()
+
 	Convey("Requests a proxy and handles response", t, func() {
-		answerSdp := &webrtc.SessionDescription{
-			Type: webrtc.SDPTypeAnswer,
-			SDP:  "test",
-		}
-		answerSdpStr, _ := util.SerializeSessionDescription(answerSdp)
-		serverResponse, _ := (&messages.ClientPollResponse{
-			Answer: answerSdpStr,
-		}).EncodePollResponse()
-
-		offerSdp := &webrtc.SessionDescription{
-			Type: webrtc.SDPTypeOffer,
-			SDP:  "test",
-		}
-
-		requestBodyChan := make(chan []byte)
-		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, _ := io.ReadAll(r.Body)
-			go func() {
-				requestBodyChan <- body
-			}()
-			w.Write(serverResponse)
-		}))
-		defer mockServer.Close()
-
 		brokerChannel, err := newBrokerChannelFromConfig(ClientConfig{
 			BrokerURL:         mockServer.URL,
 			BridgeFingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -423,9 +423,10 @@ func TestBrokerChannel(t *testing.T) {
 		So(err, ShouldBeNil)
 		brokerChannel.SetNATType(nat.NATRestricted)
 
-		answerSdpReturned, err := brokerChannel.Negotiate(offerSdp)
+		answerSdpReturned, onConnectionResult, err := brokerChannel.Negotiate(offerSdp)
 		So(err, ShouldBeNil)
 		So(answerSdpReturned, ShouldEqual, answerSdp)
+		onConnectionResult(true)
 
 		body := <-requestBodyChan
 		pollReq, err := messages.DecodeClientPollRequest(body)
@@ -435,5 +436,87 @@ func TestBrokerChannel(t *testing.T) {
 		requestSdp, err := util.DeserializeSessionDescription(pollReq.Offer)
 		So(err, ShouldBeNil)
 		So(requestSdp, ShouldEqual, offerSdp)
+	})
+
+	Convey("When NAT type is unknown, requests a restricted proxy initially", t, func() {
+		brokerChannel, err := newBrokerChannelFromConfig(ClientConfig{
+			BrokerURL:         mockServer.URL,
+			BridgeFingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		})
+		So(err, ShouldBeNil)
+		// NAT type is unknown initially
+		So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnknown)
+
+		answerSdpReturned, onConnectionResult, err := brokerChannel.Negotiate(offerSdp)
+		So(err, ShouldBeNil)
+		So(answerSdpReturned, ShouldEqual, answerSdp)
+
+		body := <-requestBodyChan
+		pollReq, err := messages.DecodeClientPollRequest(body)
+		So(err, ShouldBeNil)
+
+		// It is unknown, but in the request it's "unrestricted".
+		So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnknown)
+		So(pollReq.NAT, ShouldEqual, nat.NATUnrestricted)
+
+		Convey("and if rendezvous fails, keep requesting restricted proxies", func() {
+			// i.e. NOT calling onConnectionResult() here.
+			// Another (more proper) way is to make the server return an error.
+
+			answerSdpReturned, onConnectionResult, err = brokerChannel.Negotiate(offerSdp)
+			So(err, ShouldBeNil)
+			So(answerSdpReturned, ShouldEqual, answerSdp)
+
+			body := <-requestBodyChan
+			pollReq, err = messages.DecodeClientPollRequest(body)
+			So(err, ShouldBeNil)
+
+			So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnknown)
+			So(pollReq.NAT, ShouldEqual, nat.NATUnrestricted)
+		})
+
+		Convey("and if the proxy connection succeeds, keep requesting restricted proxies", func() {
+			onConnectionResult(true)
+
+			answerSdpReturned, onConnectionResult, err = brokerChannel.Negotiate(offerSdp)
+			So(err, ShouldBeNil)
+			So(answerSdpReturned, ShouldEqual, answerSdp)
+
+			body := <-requestBodyChan
+			pollReq, err = messages.DecodeClientPollRequest(body)
+			So(err, ShouldBeNil)
+
+			So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnknown)
+			So(pollReq.NAT, ShouldEqual, nat.NATUnrestricted)
+		})
+
+		Convey("and if a proxy connection fails, request proxies according to actual NAT", func() {
+			onConnectionResult(false)
+
+			answerSdpReturned, onConnectionResult, err = brokerChannel.Negotiate(offerSdp)
+			So(err, ShouldBeNil)
+			So(answerSdpReturned, ShouldEqual, answerSdp)
+
+			body := <-requestBodyChan
+			pollReq, err = messages.DecodeClientPollRequest(body)
+			So(err, ShouldBeNil)
+
+			So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnknown)
+			So(pollReq.NAT, ShouldEqual, nat.NATUnknown)
+
+			// NAT type gets determined
+			brokerChannel.SetNATType(nat.NATUnrestricted)
+
+			answerSdpReturned, onConnectionResult, err = brokerChannel.Negotiate(offerSdp)
+			So(err, ShouldBeNil)
+			So(answerSdpReturned, ShouldEqual, answerSdp)
+
+			body = <-requestBodyChan
+			pollReq, err = messages.DecodeClientPollRequest(body)
+			So(err, ShouldBeNil)
+
+			So(brokerChannel.getNATType(), ShouldEqual, nat.NATUnrestricted)
+			So(pollReq.NAT, ShouldEqual, nat.NATUnrestricted)
+		})
 	})
 }
