@@ -137,11 +137,14 @@ type SnowflakeProxy struct {
 	// Ephemeral*Port limits the pool of ports that ICE UDP connections can allocate from
 	EphemeralMinPort uint16
 	EphemeralMaxPort uint16
-	// RelayDomainNamePattern is the pattern specify allowed domain name for relay
+	// AllowedRelayHostPattern is the pattern specify allowed host
+	// (hostname and, optionally, port) for relay.
 	// If the pattern starts with ^ then an exact match is required.
-	// The rest of pattern is the suffix of domain name.
-	// There is no look ahead assertion when matching domain name suffix,
+	// The rest of pattern is the suffix of host.
+	// There is no look ahead assertion when matching host suffix,
 	// thus the string prepend the suffix does not need to be empty or ends with a dot.
+	AllowedRelayHostPattern string
+	// Deprecated: use AllowedRelayHostPattern instead
 	RelayDomainNamePattern string
 	// AllowProxyingToPrivateAddresses determines whether to allow forwarding
 	// client connections to private IP addresses.
@@ -610,7 +613,7 @@ func (sf *SnowflakeProxy) makeNewPeerConnection(
 }
 
 func (sf *SnowflakeProxy) runSession(sid string) {
-	offer, relayURL := broker.pollOffer(sid, sf.ProxyType, sf.RelayDomainNamePattern, sf.PollInterval, sf.shutdown)
+	offer, relayURL := broker.pollOffer(sid, sf.ProxyType, sf.AllowedRelayHostPattern, sf.PollInterval, sf.shutdown)
 	if offer == nil {
 		log.Printf("bad offer from broker")
 		tokens.ret()
@@ -619,7 +622,7 @@ func (sf *SnowflakeProxy) runSession(sid string) {
 	log.Printf("Received Offer From Broker: \n\t%s", strings.ReplaceAll(offer.SDP, "\n", "\n\t"))
 
 	if relayURL != "" {
-		if err := checkIsRelayURLAcceptable(sf.RelayDomainNamePattern, sf.AllowProxyingToPrivateAddresses, sf.AllowNonTLSRelay, relayURL); err != nil {
+		if err := checkIsRelayURLAcceptable(sf.AllowedRelayHostPattern, sf.AllowProxyingToPrivateAddresses, sf.AllowNonTLSRelay, relayURL); err != nil {
 			log.Printf("bad offer from broker: %v", err)
 			tokens.ret()
 			return
@@ -661,7 +664,7 @@ func (sf *SnowflakeProxy) runSession(sid string) {
 
 // Returns nil if the relayURL is acceptable
 func checkIsRelayURLAcceptable(
-	allowedHostNamePattern string,
+	allowedHostPattern string,
 	allowPrivateIPs bool,
 	allowNonTLSRelay bool,
 	relayURL string,
@@ -688,9 +691,11 @@ func checkIsRelayURLAcceptable(
 	if parsedRelayURL.Scheme != "wss" && parsedRelayURL.Scheme != "ws" {
 		return fmt.Errorf("rejected Relay URL protocol: only WebSocket is allowed")
 	}
-	matcher := namematcher.NewNameMatcher(allowedHostNamePattern)
-	if !matcher.IsMember(parsedRelayURL.Hostname()) {
-		return fmt.Errorf("rejected Relay URL: hostname does not match allowed pattern \"%v\"", allowedHostNamePattern)
+	matcher := namematcher.NewNameMatcher(allowedHostPattern)
+	// TODO do not reject client if the port is specified explicitly
+	// in `relayURL` but implicitly in `allowedHostPattern`, and vice versa.
+	if !matcher.IsMember(parsedRelayURL.Host) {
+		return fmt.Errorf("rejected Relay URL: host does not match allowed pattern \"%v\"", allowedHostPattern)
 	}
 	return nil
 }
@@ -744,8 +749,13 @@ func (sf *SnowflakeProxy) Start() error {
 		return fmt.Errorf("invalid default relay url: %s", err)
 	}
 
-	if !namematcher.IsValidRule(sf.RelayDomainNamePattern) {
-		return fmt.Errorf("invalid relay domain name pattern")
+	// RelayDomainNamePattern is deprecated
+	if sf.AllowedRelayHostPattern == "" && sf.RelayDomainNamePattern != "" {
+		sf.AllowedRelayHostPattern = sf.RelayDomainNamePattern
+	}
+
+	if !namematcher.IsValidRule(sf.AllowedRelayHostPattern) {
+		return fmt.Errorf("invalid relay host pattern")
 	}
 
 	config = webrtc.Configuration{

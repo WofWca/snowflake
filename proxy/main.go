@@ -31,7 +31,7 @@ func main() {
 	defaultRelayURL := flag.String("relay", sf.DefaultRelayURL, "websocket relay URL")
 	probeURL := flag.String("nat-probe-server", sf.DefaultNATProbeURL, "NAT check probe server URL")
 	outboundAddress := flag.String("outbound-address", "", "prefer the given address as outbound address")
-	allowedRelayHostNamePattern := flag.String("allowed-relay-hostname-pattern", "snowflake.torproject.net$", "a pattern to specify allowed hostname pattern for relay URL.")
+	allowedRelayHostPattern := flag.String("allowed-relay-host-pattern", "snowflake.torproject.net$", "a pattern to specify allowed host (hostname and, optionally, port) pattern for relay URL.")
 	allowProxyingToPrivateAddresses := flag.Bool("allow-proxying-to-private-addresses", false, "allow forwarding client connections to private IP addresses.\nUseful when a Snowflake server (relay) is hosted on the same private network as this proxy.")
 	allowNonTLSRelay := flag.Bool("allow-non-tls-relay", false, "allow relay without tls encryption")
 	NATTypeMeasurementInterval := flag.Duration("nat-retest-interval", time.Hour*24,
@@ -106,7 +106,7 @@ func main() {
 		NATTypeMeasurementInterval: *NATTypeMeasurementInterval,
 		EventDispatcher:            eventLogger,
 
-		RelayDomainNamePattern:          *allowedRelayHostNamePattern,
+		AllowedRelayHostPattern:         *allowedRelayHostPattern,
 		AllowProxyingToPrivateAddresses: *allowProxyingToPrivateAddresses,
 		AllowNonTLSRelay:                *allowNonTLSRelay,
 
