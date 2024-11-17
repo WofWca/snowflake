@@ -708,7 +708,52 @@ func checkIsSafeToConnectToRelay(
 		return fmt.Errorf("failed to parse relayURL: %v", err)
 	}
 
+	// FYI all sidechannel-sensitive checks must be inside _one_
+	// `withSidechannelAttackProtection` function call and not
+	// a separate one for each check.
+	// Otherwise an attacker can figure out which particular check failed.
+	// For example, if the first check is successful,
+	// but the second check is not, we'd respond with a delay
+	// slightly greater than `checkIsSafeToConnectToRelayTimeout`,
+	// because the first check would return almost (but not completely)
+	// immediately.
+	// On the contrary, if it was the first check that failed
+	// and not the second,
+	// the return delay would be exactly `checkIsSafeToConnectToRelayTimeout`.
 	ok := withSidechannelAttackProtection(func() error {
+		if !allowPrivateIPs {
+			// Perform a DNS query to see if the target address is private.
+			// Examples where a domain name can resolve to a private address:
+			// - my-pc-1.local
+			// - www.asusrouter.com (see https://www.asus.com/support/faq/1005263/)
+			// - localhost
+			//
+			// Why this needs to be inside the `withSidechannelAttackProtection`
+			// function:
+			// Because otherwise (given a lax `allowedHostPattern`)
+			// the client could, based on response times,
+			// figure out whether a domain name (e.g. my-pc-1.local) exists,
+			// and whether it was stored in DNS cache.
+			//
+			// Keep in mind that `parsedRelayURL.Hostname()` could be an
+			// IP address already. `net.LookupIP` handles this case.
+			// (and yes, FYI `basicCheckIsRelayURLAcceptable`
+			// would handle this case as well).
+			ips, err := net.LookupIP(parsedRelayURL.Hostname())
+			if err != nil {
+				return fmt.Errorf("could not look up relayURL IP: %w", err)
+			}
+			for _, ip := range ips {
+				if !isRemoteAddress(ip) {
+					return fmt.Errorf(
+						"rejected relayURL (\"%v\"): private IPs are not allowed: %v",
+						relayURL,
+						ip,
+					)
+				}
+			}
+		}
+
 		if requireRelayConsent {
 			return doConsentRequest(
 				parsedRelayURL,

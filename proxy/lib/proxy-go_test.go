@@ -499,6 +499,43 @@ func TestUtilityFuncs(t *testing.T) {
 		So(err, ShouldNotBeNil)
 	})
 	Convey("checkIsSafeToConnectToRelay", t, func() {
+		Convey("rejects domain names resolving to private IPs", func() {
+			allowPrivateIps := true
+			err := checkIsSafeToConnectToRelay(
+				"$",
+				allowPrivateIps,
+				true,
+				false,
+				"ws://localhost:8080",
+			)
+			So(err, ShouldBeNil)
+			err = checkIsSafeToConnectToRelay(
+				"$",
+				allowPrivateIps,
+				true,
+				false,
+				"ws://127.0.0.1:8080",
+			)
+			So(err, ShouldBeNil)
+
+			allowPrivateIps = false
+			err = checkIsSafeToConnectToRelay(
+				"$",
+				allowPrivateIps,
+				true,
+				false,
+				"ws://localhost:8080",
+			)
+			So(err, ShouldNotBeNil)
+			err = checkIsSafeToConnectToRelay(
+				"$",
+				allowPrivateIps,
+				true,
+				false,
+				"ws://127.0.0.1:8080",
+			)
+			So(err, ShouldNotBeNil)
+		})
 		Convey("returns an error if the server does not respond with a consent", func() {
 			var respondWithConsent bool
 			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
