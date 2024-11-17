@@ -35,6 +35,7 @@ func main() {
 	allowedRelayHostPattern := flag.String("allowed-relay-host-pattern", "snowflake.torproject.net$", "this proxy will only be allowed to forward client connections to relays (servers) whose URL's host (hostname and, optionally, port) matches this pattern.\nNote that a pattern \"example.com$\" will match \"subdomain.example.com\" as well as \"other-domain-example.com\".\nIn order to only match \"example.com\", prefix the pattern with \"^\": \"^example.com$\"")
 	allowProxyingToPrivateAddresses := flag.Bool("allow-proxying-to-private-addresses", false, "allow forwarding client connections to private IP addresses.\nUseful when a Snowflake server (relay) is hosted on the same private network as this proxy.")
 	allowNonTLSRelay := flag.Bool("allow-non-tls-relay", false, "allow this proxy to pass client's data to the relay in an unencrypted form.\nThis is only useful if the relay doesn't support encryption, e.g. for testing / development purposes.")
+	requireRelayConsent := flag.Bool("require-relay-consent", false, "prior to connecting to the relay and passing arbitrary client data to it, make a benign HTTP HEAD request to the relay host to ensure that it is indeed a Snowflake server and not something else")
 	NATTypeMeasurementInterval := flag.Duration("nat-retest-interval", time.Hour*24,
 		"the time interval between NAT type is retests (see \"nat-probe-server\"). 0s disables retest. Valid time units are \"s\", \"m\", \"h\".")
 	summaryInterval := flag.Duration("summary-interval", time.Hour,
@@ -110,6 +111,7 @@ func main() {
 		AllowedRelayHostPattern:         *allowedRelayHostPattern,
 		AllowProxyingToPrivateAddresses: *allowProxyingToPrivateAddresses,
 		AllowNonTLSRelay:                *allowNonTLSRelay,
+		RequireRelayConsent:             *requireRelayConsent,
 
 		SummaryInterval: *summaryInterval,
 	}

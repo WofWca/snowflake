@@ -2,16 +2,21 @@ package snowflake_proxy
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 	. "github.com/smartystreets/goconvey/convey"
+	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/consenthandshake"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/messages"
 	"gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/common/util"
 )
@@ -492,6 +497,68 @@ func TestUtilityFuncs(t *testing.T) {
 		//Check that copy loop has closed other connection
 		_, err = s2.Write(bytes)
 		So(err, ShouldNotBeNil)
+	})
+	Convey("checkIsSafeToConnectToRelay", t, func() {
+		Convey("returns an error if the server does not respond with a consent", func() {
+			var respondWithConsent bool
+			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.ReadAll(r.Body)
+
+				if !respondWithConsent {
+					w.Write([]byte("Hello! I'm a non-Snowflake web server!"))
+					return
+				}
+
+				// Mimic the behavior of an actual Snowflake server:
+				consentHandshakeChallenge := r.Header.Get(consenthandshake.RequestHeader)
+				challengeBytes, _ := hex.DecodeString(consentHandshakeChallenge)
+				consenthandshake.XorBytes(challengeBytes, consenthandshake.ChallengeKey[:])
+				challengeResponse := hex.EncodeToString(challengeBytes)
+
+				w.Header().Set(consenthandshake.ResponseHeader, challengeResponse)
+				w.Write([]byte(challengeResponse))
+			}))
+			defer mockServer.Close()
+
+			serverUrl, _ := url.Parse(mockServer.URL)
+			serverUrl.Scheme = "ws"
+
+			testingVector := []struct {
+				respondWithConsent bool
+				expectsErr         bool
+			}{
+				{respondWithConsent: false, expectsErr: true},
+				{respondWithConsent: true, expectsErr: false},
+			}
+
+			for _, v := range testingVector {
+				respondWithConsent = v.respondWithConsent
+
+				err1 := checkIsSafeToConnectToRelay("$", true, true, true, serverUrl.String())
+				// `checkIsSafeToConnectToRelay` also calls `doConsentRequest`
+				// under the hood, but it does not expose the underlying
+				// error message,
+				// but we'd like to check it, so let's call it explicitly.
+				err2 := doConsentRequest(serverUrl, 10*time.Second)
+
+				if v.expectsErr {
+					So(err1, ShouldNotBeNil)
+					So(
+						err1.Error(),
+						ShouldContainSubstring,
+						"did not consent to a Snowflake connection",
+					)
+					So(
+						err2.Error(),
+						ShouldContainSubstring,
+						`the server did not include the "I-Am-A-Snowflake-Server" header in the response`,
+					)
+				} else {
+					So(err1, ShouldBeNil)
+					So(err2, ShouldBeNil)
+				}
+			}
+		})
 	})
 	Convey("isRelayURLAcceptable", t, func() {
 		testingVector := []struct {
