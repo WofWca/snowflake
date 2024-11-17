@@ -83,7 +83,7 @@ const (
 	// client is not going to connect
 	dataChannelTimeout = 20 * time.Second
 
-	relayConsentTimeout = 10 * time.Second
+	checkIsSafeToConnectToRelayTimeout = 10 * time.Second
 
 	// Maximum number of bytes to be read from an HTTP request
 	readLimit = 100000
@@ -712,13 +712,13 @@ func checkIsSafeToConnectToRelay(
 		if requireRelayConsent {
 			return doConsentRequest(
 				parsedRelayURL,
-				relayConsentTimeout-1*time.Second,
+				checkIsSafeToConnectToRelayTimeout-1*time.Second,
 			)
 		} else {
 			log.Printf("Skipping relay consent request for \"%v\"", relayURL)
 		}
 		return nil
-	}, relayConsentTimeout)
+	}, checkIsSafeToConnectToRelayTimeout)
 	if !ok {
 		return fmt.Errorf(
 			"server \"%v\" did not consent to a Snowflake connection",
