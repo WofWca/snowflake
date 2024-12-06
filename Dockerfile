@@ -22,3 +22,9 @@ COPY --from=build /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=build /app/proxy/proxy /bin/proxy
 
 ENTRYPOINT [ "/bin/proxy" ]
+CMD [ \
+    "--broker", "https://sf-dh-broker.duckdns.org", \
+    "--allowed-relay-host-pattern", ":7901$", \
+    "--require-relay-consent", \
+    "--verbose" \
+]

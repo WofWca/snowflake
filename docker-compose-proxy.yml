@@ -1,0 +1,23 @@
+services:
+  snowflake-generalized-proxy:
+    network_mode: host
+    # Source code of the image:
+    # https://gitlab.torproject.org/WofWca/snowflake/-/tree/for-snowflake-generalized
+    image: containers.torproject.org/wofwca/snowflake:for-snowflake-generalized-nightly
+    container_name: snowflake-generalized-proxy
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "500m"
+        max-file: "5"
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: snowflake-generalized-proxy
+    logging:
+      options:
+        max-size: "100m"
+        max-file: "10"
